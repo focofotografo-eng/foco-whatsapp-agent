@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+data/
+ngrok
+.DS_Store
+*.log
+skills/
+.agents/
+GEMINI.md
+gemini-extension.json
+.claude/
+test_agent.py
