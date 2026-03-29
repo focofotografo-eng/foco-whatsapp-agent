@@ -24,7 +24,7 @@ def voiceflow_interact(user_id: str, message: str) -> str:
     headers = {
         "Authorization": VF_API_KEY,
         "Content-Type": "application/json",
-        "versionID": "production",
+        "versionID": os.getenv("VF_VERSION_ID", "development"),
     }
     payload = {
         "action": {"type": "text", "payload": message},
@@ -33,6 +33,7 @@ def voiceflow_interact(user_id: str, message: str) -> str:
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
+        print(f"[VOICEFLOW] Status: {response.status_code} | Body: {response.text[:200]}")
         response.raise_for_status()
         traces = response.json()
 
