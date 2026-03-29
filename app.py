@@ -1,71 +1,46 @@
 """
-FOCO IA Lab — Agente WhatsApp con Voiceflow
-Webhook para Twilio WhatsApp API → Voiceflow Dialog Manager API
+FOCO IA Lab — Agente de Atención al Cliente WhatsApp
+Webhook para Twilio WhatsApp API
 """
 
 import os
-import requests
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.request_validator import RequestValidator
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from agents.orchestrator import OrchestratorAgent
+from store.conversations import reset_conversation
+
 app = Flask(__name__)
+orchestrator = OrchestratorAgent()
 
-VF_API_KEY = os.getenv("VF_API_KEY", "")
-VF_PROJECT_ID = os.getenv("VF_PROJECT_ID", "")
-VF_BASE_URL = "https://general-runtime.voiceflow.com"
-
-
-def voiceflow_interact(user_id: str, message: str) -> str:
-    """Envía mensaje a Voiceflow y retorna la respuesta en texto."""
-    url = f"{VF_BASE_URL}/state/user/{user_id}/interact"
-    headers = {
-        "Authorization": VF_API_KEY,
-        "Content-Type": "application/json",
-        "versionID": os.getenv("VF_VERSION_ID", "development"),
-    }
-    payload = {
-        "action": {"type": "text", "payload": message},
-        "config": {"tts": False, "stripSSML": True},
-    }
-
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        print(f"[VOICEFLOW] Status: {response.status_code} | Body: {response.text[:200]}")
-        response.raise_for_status()
-        traces = response.json()
-
-        texts = []
-        for trace in traces:
-            if trace.get("type") == "text":
-                msg = trace.get("payload", {}).get("message", "")
-                if msg:
-                    texts.append(msg)
-            elif trace.get("type") == "speak":
-                msg = trace.get("payload", {}).get("message", "")
-                if msg:
-                    texts.append(msg)
-
-        return "\n\n".join(texts) if texts else "Un momento, ¿puedes repetirme eso?"
-
-    except Exception as e:
-        print(f"[VOICEFLOW] Error: {e}")
-        return "Lo siento, tuve un problema técnico. ¿Puedes escribirme de nuevo?"
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+VALIDATE_TWILIO = os.getenv("VALIDATE_TWILIO_SIGNATURE", "false").lower() == "true"
 
 
-def voiceflow_reset(user_id: str):
-    """Reinicia la conversación del usuario en Voiceflow."""
-    url = f"{VF_BASE_URL}/state/user/{user_id}"
-    headers = {"Authorization": VF_API_KEY}
-    try:
-        requests.delete(url, headers=headers, timeout=5)
-    except Exception as e:
-        print(f"[VOICEFLOW] Error al reiniciar: {e}")
+def validate_twilio_request(f):
+    from functools import wraps
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not VALIDATE_TWILIO:
+            return f(*args, **kwargs)
+        validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        url = request.url
+        post_vars = request.form.to_dict()
+        signature = request.headers.get("X-Twilio-Signature", "")
+        if not validator.validate(url, post_vars, signature):
+            return jsonify({"error": "Invalid signature"}), 403
+        return f(*args, **kwargs)
+
+    return decorated
 
 
 @app.route("/webhook", methods=["POST"])
+@validate_twilio_request
 def webhook():
     incoming_msg = request.values.get("Body", "").strip()
     sender = request.values.get("From", "unknown")
@@ -74,15 +49,21 @@ def webhook():
     if not incoming_msg:
         return _twiml_response("")
 
-    print(f"[WEBHOOK] {sender} ({profile_name}): {incoming_msg[:80]}")
+    print(f"[WEBHOOK] Mensaje de {sender} ({profile_name}): {incoming_msg[:80]}")
 
     if incoming_msg.lower() in ("/reset", "!reset"):
-        voiceflow_reset(sender)
+        reset_conversation(sender)
         return _twiml_response("Conversación reiniciada. ¡Hola de nuevo! 👋")
 
-    response_text = voiceflow_interact(sender, incoming_msg)
-    print(f"[WEBHOOK] Respuesta: {response_text[:80]}")
-    return _twiml_response(response_text)
+    try:
+        response_text = orchestrator.process_message(sender, incoming_msg)
+        print(f"[WEBHOOK] Respuesta generada ({len(response_text)} chars)")
+        return _twiml_response(response_text)
+    except Exception as e:
+        print(f"[WEBHOOK] Error procesando mensaje: {e}")
+        return _twiml_response(
+            "Lo siento, tuve un problema técnico momentáneo. ¿Puedes escribirme de nuevo?"
+        )
 
 
 def _twiml_response(text: str):
@@ -97,11 +78,11 @@ def health():
     return jsonify({
         "status": "ok",
         "service": "FOCO IA Lab WhatsApp Agent",
-        "engine": "Voiceflow",
+        "website": "www.focoialab.com"
     })
 
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    print(f"[APP] FOCO IA Lab iniciando en puerto {port}")
+    print(f"[APP] FOCO IA Lab WhatsApp Agent iniciando en puerto {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
